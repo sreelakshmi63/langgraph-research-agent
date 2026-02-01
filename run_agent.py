@@ -21,7 +21,7 @@ def main():
             "messages": [HumanMessage(content=question)],
              "steps": 0
         },
-        config={"recursion_limit": 100}
+        config={"recursion_limit": 20}
     )
 
     print("\n✅ Final Answer:")

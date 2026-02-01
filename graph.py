@@ -8,7 +8,8 @@ from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
-from tools import web_search, summarize
+from tools import web_search, summarize, rag_probe, rag_tool
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -27,11 +28,12 @@ class AgentState(TypedDict):
 # 2. LLM + tools
 # -----------------------------
 llm = ChatOpenAI(
-    model="gpt-4o-mini",
+    # model="gpt-4o-mini",
+    model="gpt-3.5-turbo",
     temperature=0
 )
 
-tools = [web_search, summarize]
+tools = [web_search, summarize, rag_probe, rag_tool]
 llm_with_tools = llm.bind_tools(tools)
 
 # -----------------------------
@@ -63,22 +65,43 @@ llm_with_tools = llm.bind_tools(tools)
 # """
 
 
+# SYSTEM_PROMPT = """
+# You are a research assistant.
+
+# You may use tools to gather information.
+# Once you have enough information, STOP calling tools
+# and produce a FINAL ANSWER in plain text.
+
+# When multiple web search results are available:
+# 1. Call the summarize tool to condense them
+# 2. Then produce a final answer
+
+# Rules:
+# - If you do not need a tool, answer directly.
+# - Do NOT call tools endlessly.
+# - When answering, DO NOT call any tools.
+# """
+
 SYSTEM_PROMPT = """
-You are a research assistant.
+You are a research assistant with access to tools.
 
-You may use tools to gather information.
-Once you have enough information, STOP calling tools
-and produce a FINAL ANSWER in plain text.
-
-When multiple web search results are available:
-1. Call the summarize tool to condense them
-2. Then produce a final answer
+Routing rules (STRICT, DO NOT VIOLATE):
+1. ALWAYS call `rag_probe` first for every user question only once
+2. Read the returned `confidence` value.
+3. If confidence >= {CONFIDENCE_THRESHOLD}, call `rag_tool`.
+4. If confidence < {CONFIDENCE_THRESHOLD}, DO NOT call `rag_tool`;
+   instead call `web_search`.
+5. After gathering information, call the summarize tool to condense them
+6. Then produce a final answer
 
 Rules:
-- If you do not need a tool, answer directly.
-- Do NOT call tools endlessly.
-- When answering, DO NOT call any tools.
+- Do not hallucinate document content.
+- Do not skip the probe step.
+- Do not call tools endlessly.
+- Produce only the final summarized answer.
 """
+
+
 
 
 
@@ -87,8 +110,11 @@ def agent_node(state: AgentState):
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
     # messages = state["messages"]
     response = llm_with_tools.invoke(messages)
-    return {"messages": [response], "steps": state["steps"] + 1}
-
+    # return {"messages": [response], "steps": state["steps"] + 1}
+    return {
+        "messages": state["messages"] + [response],
+        "steps": state["steps"] + 1
+    }
 # -----------------------------
 # 4. Tool node
 # -----------------------------
@@ -118,14 +144,16 @@ graph.set_entry_point("agent")
 def route(state: AgentState):
     last = state["messages"][-1]
 
-    # Hard stop after 3 agent turns
-    if state["steps"] >= 10:
+    # Hard stop after 10 agent turns
+    if state["steps"] >= 15:
+        print("Force termination initiated after 15 steps of agent")
         return END
 
     # Use tools only if explicitly requested
     if isinstance(last, AIMessage) and last.tool_calls:
         return "tools"
 
+    print("Termiinating agent as no tool calls detected.")
     return END
 
 
